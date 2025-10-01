@@ -17,13 +17,259 @@ class FaceRecognitionSystem:
         self.db_manager = DatabaseManager()
         logger.info("Đã khởi tạo Face Recognition System")
     
-    def register_face(self, image_path, person_name):
+    def register_face_from_base64(self, base64_image, person_name, description=None):
+        """
+        Đăng ký khuôn mặt từ base64 image
+        
+        Args:
+            base64_image (str): Base64 encoded image
+            person_name (str): Tên của người
+            description (str, optional): Mô tả thêm về người này
+        
+        Returns:
+            dict: Kết quả đăng ký
+        """
+        import tempfile
+        import base64
+        from PIL import Image
+        from io import BytesIO
+        
+        try:
+            # Decode base64 to image
+            if base64_image.startswith('data:image'):
+                base64_image = base64_image.split(',')[1]
+            
+            image_data = base64.b64decode(base64_image)
+            image = Image.open(BytesIO(image_data))
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+                image.save(temp_file.name, 'JPEG')
+                temp_path = temp_file.name
+            
+            # Use existing register_face method
+            result = self.register_face(temp_path, person_name, description)
+            
+            # Clean up temp file
+            import os
+            os.unlink(temp_path)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Lỗi đăng ký từ base64: {e}")
+            return {
+                'success': False,
+                'message': f'Lỗi xử lý ảnh base64: {str(e)}',
+                'face_count': 0
+            }
+
+    def recognize_face_from_base64(self, base64_image, threshold=0.6):
+        """
+        Nhận diện khuôn mặt từ base64 image
+        
+        Args:
+            base64_image (str): Base64 encoded image
+            threshold (float): Ngưỡng similarity
+        
+        Returns:
+            dict: Kết quả nhận diện
+        """
+        import tempfile
+        import base64
+        from PIL import Image
+        from io import BytesIO
+        
+        try:
+            # Decode base64 to image
+            if base64_image.startswith('data:image'):
+                base64_image = base64_image.split(',')[1]
+            
+            image_data = base64.b64decode(base64_image)
+            image = Image.open(BytesIO(image_data))
+            
+            # Save to temporary file
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file:
+                image.save(temp_file.name, 'JPEG')
+                temp_path = temp_file.name
+            
+            # Process image and extract embedding
+            face_result = self.face_processor.process_image(temp_path)
+            
+            # Clean up temp file
+            import os
+            os.unlink(temp_path)
+            
+            if not face_result or face_result['total_faces'] == 0:
+                return {
+                    'success': False,
+                    'message': 'Không tìm thấy khuôn mặt trong ảnh',
+                    'name': None,
+                    'face_id': None,
+                    'similarity': None
+                }
+            
+            logger.info(f"Đã xử lý {face_result['total_faces']} khuôn mặt trong ảnh")
+
+            # Get database embeddings
+            database_embeddings = self.db_manager.get_all_face_embeddings()
+            logger.info(f"Database có {len(database_embeddings)} khuôn mặt")
+            
+            if not database_embeddings:
+                return {
+                    'success': True,
+                    'message': 'Database trống, chưa có khuôn mặt nào được đăng ký',
+                    'name': None,
+                    'face_id': None,
+                    'similarity': None
+                }
+            
+            # Get first face embedding
+            face_embedding = face_result['faces'][0]['embedding']
+            logger.info(f"Query embedding shape: {face_embedding.shape}")
+            
+            # Debug: Log database embeddings info
+            for i, db_face in enumerate(database_embeddings):
+                logger.info(f"DB face {i}: id={db_face['id']}, name={db_face['name']}, embedding_shape={db_face['embedding'].shape}")
+            
+            # Find matching face with custom threshold
+            match_result = self.face_processor.find_matching_face(
+                face_embedding, 
+                database_embeddings,
+                threshold=threshold
+            )
+            
+            logger.info(f"Match result: best_similarity={match_result['best_similarity']:.4f}, threshold={threshold}, found_match={match_result['found_match']}")
+            
+            if match_result['found_match'] and match_result['best_match']:
+                logger.info(f"FOUND MATCH: {match_result['best_match']['name']} (similarity: {match_result['best_match']['similarity']:.4f})")
+                return {
+                    'success': True,
+                    'message': f'Nhận diện thành công: {match_result["best_match"]["name"]}',
+                    'name': match_result['best_match']['name'],
+                    'face_id': match_result['best_match']['id'],
+                    'similarity': match_result['best_match']['similarity'],
+                    'confidence': match_result['best_match']['confidence']
+                }
+            else:
+                logger.info(f"NO MATCH FOUND: best_similarity={match_result['best_similarity']:.4f} < threshold={threshold}")
+                # Thêm debug cho similarity values
+                similarities = []
+                for db_face in database_embeddings:
+                    sim = self.face_processor.calculate_cosine_similarity(face_embedding, db_face['embedding'])
+                    similarities.append(f"{db_face['name']}={sim:.4f}")
+                logger.info(f"All similarities: {', '.join(similarities)}")
+                
+                return {
+                    'success': True,
+                    'message': f'Không tìm thấy khuôn mặt phù hợp (best similarity: {match_result["best_similarity"]:.4f} < threshold: {threshold})',
+                    'name': None,
+                    'face_id': None,
+                    'similarity': match_result['best_similarity'],
+                    'confidence': None,
+                    'debug_similarities': similarities
+                }
+            
+        except Exception as e:
+            logger.error(f"Lỗi nhận diện từ base64: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                'success': False,
+                'message': f'Lỗi xử lý ảnh base64: {str(e)}'
+            }
+
+    def compare_faces_from_base64(self, base64_image1, base64_image2, threshold=0.6):
+        """
+        So sánh 2 khuôn mặt từ base64 images
+        
+        Args:
+            base64_image1 (str): Base64 encoded first image
+            base64_image2 (str): Base64 encoded second image
+            threshold (float): Ngưỡng similarity
+        
+        Returns:
+            dict: Kết quả so sánh
+        """
+        import tempfile
+        import base64
+        from PIL import Image
+        from io import BytesIO
+        
+        try:
+            # Decode base64 images
+            if base64_image1.startswith('data:image'):
+                base64_image1 = base64_image1.split(',')[1]
+            if base64_image2.startswith('data:image'):
+                base64_image2 = base64_image2.split(',')[1]
+            
+            image1_data = base64.b64decode(base64_image1)
+            image2_data = base64.b64decode(base64_image2)
+            
+            image1 = Image.open(BytesIO(image1_data))
+            image2 = Image.open(BytesIO(image2_data))
+            
+            # Save to temporary files
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file1:
+                image1.save(temp_file1.name, 'JPEG')
+                temp_path1 = temp_file1.name
+                
+            with tempfile.NamedTemporaryFile(suffix='.jpg', delete=False) as temp_file2:
+                image2.save(temp_file2.name, 'JPEG')
+                temp_path2 = temp_file2.name
+            
+            # Use existing compare method
+            result = self.compare_two_images(temp_path1, temp_path2)
+            
+            # Clean up temp files
+            import os
+            os.unlink(temp_path1)
+            os.unlink(temp_path2)
+            
+            # Extract comparison data and format for FastAPI
+            if result['success'] and result.get('comparison'):
+                comparison = result['comparison']
+                similarity = comparison.get('similarity')
+                is_match = comparison.get('is_same_person', False)
+                
+                logger.info(f"Comparison successful: similarity={similarity:.4f}, match={is_match}")
+                
+                return {
+                    'success': True,
+                    'message': f'So sánh thành công (similarity: {similarity:.4f})',
+                    'similarity': float(similarity),
+                    'match': bool(is_match)
+                }
+            else:
+                logger.error(f"Comparison failed: {result.get('message', 'Unknown error')}")
+                return {
+                    'success': False,
+                    'message': result.get('message', 'Lỗi so sánh không xác định'),
+                    'similarity': None,
+                    'match': None
+                }
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Lỗi so sánh từ base64: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
+            return {
+                'success': False,
+                'message': f'Lỗi xử lý ảnh base64: {str(e)}',
+                'similarity': None,
+                'match': None
+            }
+
+    def register_face(self, image_path, person_name, description=None):
         """
         Đăng ký khuôn mặt mới vào hệ thống
         
         Args:
             image_path (str): Đường dẫn đến ảnh
             person_name (str): Tên của người
+            description (str, optional): Mô tả thêm về người này
         
         Returns:
             dict: Kết quả đăng ký
@@ -47,13 +293,14 @@ class FaceRecognitionSystem:
             face_confidence = result['faces'][0]['confidence']
             
             # Lưu vào database
-            face_id = self.db_manager.save_face_embedding(person_name, face_embedding)
+            face_id = self.db_manager.save_face_embedding(person_name, face_embedding, description)
             
             return {
                 'success': True,
                 'message': f'Đã đăng ký thành công khuôn mặt cho {person_name}',
                 'face_id': face_id,
                 'person_name': person_name,
+                'description': description,
                 'face_count': result['total_faces'],
                 'confidence': face_confidence,
                 'embedding_shape': face_embedding.shape

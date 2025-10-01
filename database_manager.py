@@ -52,13 +52,14 @@ class DatabaseManager:
             logger.error(f"Lỗi tạo bảng: {e}")
             raise
     
-    def save_face_embedding(self, name, embedding):
+    def save_face_embedding(self, name, embedding, description=None):
         """
         Lưu embedding của khuôn mặt vào database
         
         Args:
             name (str): Tên của người
             embedding (np.ndarray): Vector embedding 512 chiều
+            description (str, optional): Mô tả thêm về người này
         
         Returns:
             int: ID của record được tạo
@@ -69,11 +70,11 @@ class DatabaseManager:
             embedding_json = json.dumps(embedding_list)
             
             insert_query = """
-            INSERT INTO faces (name, embedding) VALUES (%s, %s)
+            INSERT INTO faces (name, description, embedding) VALUES (%s, %s, %s)
             """
             
             with self.connection.cursor() as cursor:
-                cursor.execute(insert_query, (name, embedding_json))
+                cursor.execute(insert_query, (name, description, embedding_json))
                 face_id = cursor.lastrowid
             
             logger.info(f"Đã lưu embedding cho {name} với ID: {face_id}")
@@ -88,10 +89,10 @@ class DatabaseManager:
         Lấy tất cả embedding từ database
         
         Returns:
-            list: Danh sách tuple (face_id, name, embedding)
+            list: Danh sách dict {'id', 'name', 'description', 'embedding'}
         """
         try:
-            select_query = "SELECT face_id, name, embedding FROM faces"
+            select_query = "SELECT face_id, name, description, embedding FROM faces"
             
             with self.connection.cursor() as cursor:
                 cursor.execute(select_query)
@@ -100,10 +101,15 @@ class DatabaseManager:
             # Chuyển JSON string thành numpy array
             face_data = []
             for result in results:
-                face_id, name, embedding_json = result[0], result[1], result[2]
+                face_id, name, description, embedding_json = result[0], result[1], result[2], result[3]
                 embedding_list = json.loads(embedding_json)
                 embedding = np.array(embedding_list, dtype=np.float32)
-                face_data.append({'id': face_id, 'name': name, 'embedding': embedding})
+                face_data.append({
+                    'id': face_id, 
+                    'name': name, 
+                    'description': description, 
+                    'embedding': embedding
+                })
             
             logger.info(f"Đã lấy {len(face_data)} embedding từ database")
             return face_data
@@ -139,20 +145,20 @@ class DatabaseManager:
             name (str): Tên cần tìm
         
         Returns:
-            tuple: (face_id, name, embedding) hoặc None nếu không tìm thấy
+            tuple: (face_id, name, description, embedding) hoặc None nếu không tìm thấy
         """
         try:
-            select_query = "SELECT face_id, name, embedding FROM faces WHERE name = %s"
+            select_query = "SELECT face_id, name, description, embedding FROM faces WHERE name = %s"
             
             with self.connection.cursor() as cursor:
                 cursor.execute(select_query, (name,))
                 result = cursor.fetchone()
             
             if result:
-                face_id, name, embedding_json = result
+                face_id, name, description, embedding_json = result
                 embedding_list = json.loads(embedding_json)
                 embedding = np.array(embedding_list, dtype=np.float32)
-                return (face_id, name, embedding)
+                return (face_id, name, description, embedding)
             
             return None
         
@@ -160,7 +166,7 @@ class DatabaseManager:
             logger.error(f"Lỗi tìm kiếm theo tên: {e}")
             return None
     
-    def update_face_embedding(self, face_id, name, embedding):
+    def update_face_embedding(self, face_id, name, embedding, description=None):
         """
         Cập nhật embedding cho một face ID
         
@@ -168,6 +174,7 @@ class DatabaseManager:
             face_id (int): ID của face
             name (str): Tên mới
             embedding (np.ndarray): Embedding mới
+            description (str, optional): Mô tả mới
         
         Returns:
             bool: True nếu cập nhật thành công
@@ -177,12 +184,12 @@ class DatabaseManager:
             embedding_json = json.dumps(embedding_list)
             
             update_query = """
-            UPDATE faces SET name = %s, embedding = %s 
+            UPDATE faces SET name = %s, description = %s, embedding = %s 
             WHERE face_id = %s
             """
             
             with self.connection.cursor() as cursor:
-                affected_rows = cursor.execute(update_query, (name, embedding_json, face_id))
+                affected_rows = cursor.execute(update_query, (name, description, embedding_json, face_id))
             
             if affected_rows > 0:
                 logger.info(f"Đã cập nhật embedding cho ID: {face_id}")
@@ -222,6 +229,50 @@ class DatabaseManager:
             logger.error(f"Lỗi xóa face: {e}")
             return False
     
+    def get_all_faces(self):
+        """
+        Lấy thông tin cơ bản của tất cả faces (không bao gồm embedding)
+        
+        Returns:
+            list: Danh sách tuple (face_id, name, description, created_at, updated_at)
+        """
+        try:
+            select_query = "SELECT face_id, name, description, created_at, updated_at FROM faces ORDER BY created_at DESC"
+            
+            with self.connection.cursor() as cursor:
+                cursor.execute(select_query)
+                results = cursor.fetchall()
+            
+            logger.info(f"Đã lấy thông tin {len(results)} faces từ database")
+            return results
+        
+        except Exception as e:
+            logger.error(f"Lỗi lấy danh sách faces: {e}")
+            return []
+
+    def get_face_by_id(self, face_id):
+        """
+        Lấy thông tin face theo ID
+        
+        Args:
+            face_id (int): ID của face cần tìm
+        
+        Returns:
+            tuple: (face_id, name, description, created_at, updated_at) hoặc None
+        """
+        try:
+            select_query = "SELECT face_id, name, description, created_at, updated_at FROM faces WHERE face_id = %s"
+            
+            with self.connection.cursor() as cursor:
+                cursor.execute(select_query, (face_id,))
+                result = cursor.fetchone()
+            
+            return result
+        
+        except Exception as e:
+            logger.error(f"Lỗi tìm face theo ID: {e}")
+            return None
+
     def close(self):
         """Đóng kết nối database"""
         if self.connection:

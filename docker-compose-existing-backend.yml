@@ -1,0 +1,91 @@
+# Docker Compose Setup cho Existing Spring Boot Backend
+
+version: '3.8'
+
+services:
+  # Your existing Spring Boot application
+  your-spring-boot-app:
+    image: your-company/your-spring-boot-app:latest  # Replace with your image
+    # OR build from Dockerfile:
+    # build:
+    #   context: ./path/to/your/springboot/project
+    #   dockerfile: Dockerfile
+    ports:
+      - "8080:8080"
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - FACE_API_BASE_URL=http://face-recognition-api:5000/api
+      # Your other environment variables
+      - DATABASE_URL=jdbc:mysql://mysql:3306/your_database
+      - DATABASE_USERNAME=your_user
+      - DATABASE_PASSWORD=your_password
+    depends_on:
+      - face-recognition-api
+      - mysql  # Your existing database
+    networks:
+      - app-network
+    volumes:
+      - ./logs:/app/logs  # Your existing volumes
+
+  # Face Recognition Python API
+  face-recognition-api:
+    build:
+      context: .
+      dockerfile: Dockerfile.face-api
+    ports:
+      - "5000:5000"
+    environment:
+      - FLASK_ENV=production
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_USER=face_user
+      - MYSQL_PASSWORD=face_password
+      - MYSQL_DATABASE=face_recognition
+    depends_on:
+      - mysql
+    volumes:
+      - ./models:/app/models
+      - face-uploads:/app/uploads
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Your existing MySQL (hoặc database khác)
+  mysql:
+    image: mysql:8.0
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=root_password
+      - MYSQL_DATABASE=your_database
+      - MYSQL_USER=your_user
+      - MYSQL_PASSWORD=your_password
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./init-scripts:/docker-entrypoint-initdb.d
+    networks:
+      - app-network
+
+  # Nginx reverse proxy (optional)
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf
+    depends_on:
+      - your-spring-boot-app
+    networks:
+      - app-network
+
+volumes:
+  mysql_data:
+  face-uploads:
+
+networks:
+  app-network:
+    driver: bridge
